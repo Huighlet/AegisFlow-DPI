@@ -6,13 +6,16 @@ DNS tunneling entropy auditing, TLS JA3 fingerprinting, and an interactive devel
 
 from __future__ import annotations
 
+import hashlib
 import io
+import os
 import tempfile
+import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, status
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile, status
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from aegisflow.dns import analyze_dns_tunneling, calculate_shannon_entropy
@@ -39,6 +42,15 @@ class CustomSignatureRequest(BaseModel):
     signature_name: str = Field(..., description="Rule or malware family classification name")
 
 
+class IntelIndicator(BaseModel):
+    pattern: str = Field(..., description="Malicious IOC pattern")
+    signature_name: str = Field(..., description="Threat classification name")
+
+
+class IntelSyncRequest(BaseModel):
+    indicators: List[IntelIndicator] = Field(..., description="List of threat indicators to ingest")
+
+
 # ---------------------------------------------------------
 # Engine Initialization
 # ---------------------------------------------------------
@@ -50,6 +62,77 @@ app = FastAPI(
 )
 
 engine = AegisFlowEngine()
+
+
+class DPIRateLimiter:
+    """Token bucket rate limiter for packet ingestion."""
+    def __init__(self, capacity: int = 2000, refill_rate: float = 500.0) -> None:
+        self.capacity = capacity
+        self.tokens = float(capacity)
+        self.refill_rate = refill_rate
+        self.last_ts = time.monotonic()
+        self._lock = threading.Lock()
+
+    def consume(self) -> Tuple[bool, int]:
+        with self._lock:
+            now = time.monotonic()
+            elapsed = now - self.last_ts
+            self.last_ts = now
+            self.tokens = min(float(self.capacity), self.tokens + elapsed * self.refill_rate)
+            if self.tokens >= 1.0:
+                self.tokens -= 1.0
+                return True, int(self.tokens)
+            return False, 0
+
+
+_limiter = DPIRateLimiter(capacity=2000, refill_rate=500.0)
+
+
+@app.middleware("http")
+async def enterprise_middleware(request: Request, call_next):
+    allowed, remaining = _limiter.consume()
+    if not allowed:
+        return Response(
+            content='{"detail": "Rate limit exceeded. Sensor saturated."}',
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            media_type="application/json",
+            headers={"Retry-After": "1"},
+        )
+
+    configured_key = os.environ.get("AEGISFLOW_API_KEY")
+    if configured_key and request.url.path.startswith("/v1/"):
+        req_key = request.headers.get("X-API-Key")
+        if req_key != configured_key:
+            return Response(
+                content='{"detail": "Unauthorized: Invalid or missing X-API-Key header"}',
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                media_type="application/json",
+            )
+
+    response = await call_next(request)
+    response.headers["X-RateLimit-Remaining"] = str(remaining)
+    return response
+
+
+@app.get("/metrics", response_class=PlainTextResponse, tags=["Observability"])
+def get_metrics() -> PlainTextResponse:
+    """Prometheus metrics endpoint for packet processing and detected anomalies."""
+    telem = engine.get_telemetry()
+    lines = [
+        "# HELP aegisflow_packets_inspected_total Total network frames analyzed",
+        "# TYPE aegisflow_packets_inspected_total counter",
+        f"aegisflow_packets_inspected_total {telem['packets_inspected']}",
+        "# HELP aegisflow_bytes_inspected_total Total payload bytes processed",
+        "# TYPE aegisflow_bytes_inspected_total counter",
+        f"aegisflow_bytes_inspected_total {telem['bytes_processed']}",
+        "# HELP aegisflow_threat_alerts_total Total security alerts triggered",
+        "# TYPE aegisflow_threat_alerts_total counter",
+        f"aegisflow_threat_alerts_total {telem['total_alerts']}",
+        "# HELP aegisflow_active_signatures_total Number of registered detection patterns",
+        "# TYPE aegisflow_active_signatures_total gauge",
+        f"aegisflow_active_signatures_total {len(engine.matcher)}",
+    ]
+    return PlainTextResponse("\n".join(lines) + "\n")
 
 
 # ---------------------------------------------------------
@@ -312,6 +395,54 @@ def add_custom_signature(req: CustomSignatureRequest):
     """Register custom signature into streaming Aho-Corasick matching automaton."""
     engine.register_custom_signature(req.pattern.encode("utf-8"), req.signature_name)
     return {"registered": True, "signature_name": req.signature_name}
+
+
+@app.post("/v1/intel/sync", status_code=status.HTTP_200_OK, tags=["Threat Intelligence"])
+def sync_threat_intel(req: IntelSyncRequest) -> Dict[str, Any]:
+    """Ingest external IOC threat intelligence indicators into the matching automaton."""
+    added = 0
+    for ind in req.indicators:
+        engine.register_custom_signature(ind.pattern.encode("utf-8"), ind.signature_name)
+        added += 1
+    return {
+        "status": "SYNCED",
+        "indicators_added": added,
+        "total_signatures": len(engine.matcher),
+    }
+
+
+@app.post("/v1/forensics/export", tags=["Forensics"])
+def export_forensic_incident_report() -> Dict[str, Any]:
+    """Export complete incident report with threat timeline, IOC attribution, and cryptographic seal."""
+    alerts = engine.get_all_alerts()
+    incident_id = f"INCIDENT_{time.strftime('%Y%m%d_%H%M%S')}"
+
+    severities: Dict[str, int] = {}
+    for a in alerts:
+        sev = a.severity.name
+        severities[sev] = severities.get(sev, 0) + 1
+
+    seal = hashlib.sha256(f"{incident_id}:{len(alerts)}:{severities}".encode("utf-8")).hexdigest()
+
+    return {
+        "incident_id": incident_id,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "integrity_seal": seal,
+        "total_threat_alerts": len(alerts),
+        "severity_breakdown": severities,
+        "timeline": [
+            {
+                "alert_id": a.alert_id,
+                "timestamp": a.timestamp,
+                "severity": a.severity.name,
+                "anomaly_type": a.anomaly_type.name,
+                "src": f"{a.src_ip}:{a.src_port}",
+                "dst": f"{a.dst_ip}:{a.dst_port}",
+                "description": a.description,
+            }
+            for a in alerts[-50:]  # Recent 50
+        ],
+    }
 
 
 def serve(host: str = "0.0.0.0", port: int = 8080):

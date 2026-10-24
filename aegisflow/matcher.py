@@ -26,6 +26,14 @@ class AhoCorasickMatcher:
     def __init__(self) -> None:
         self.root = AhoNode()
         self._compiled = False
+        self._pattern_count = 0
+
+    @property
+    def pattern_count(self) -> int:
+        return self._pattern_count
+
+    def __len__(self) -> int:
+        return self._pattern_count
 
     def add_pattern(self, pattern: str | bytes, signature_name: str) -> None:
         """Insert a pattern into the trie."""
@@ -40,6 +48,7 @@ class AhoCorasickMatcher:
             current = current.children[b]
 
         current.output_signatures.append(signature_name)
+        self._pattern_count += 1
         self._compiled = False
 
     def build_automaton(self) -> None:
