@@ -115,8 +115,16 @@ def main() -> None:
     bench_p = subparsers.add_parser("bench", help="Run packet inspection benchmarks")
     bench_p.add_argument("-n", "--count", type=int, default=30000, help="Packet count")
 
+    # Serve
+    serve_p = subparsers.add_parser("serve", help="Launch FastAPI Threat Forensics REST service")
+    serve_p.add_argument("--host", default="0.0.0.0", help="Binding host address")
+    serve_p.add_argument("--port", type=int, default=8080, help="Binding port (default: 8080)")
+
     args = parser.parse_args()
-    if args.command == "analyze":
+    if args.command == "serve":
+        from aegisflow.server import serve
+        serve(host=args.host, port=args.port)
+    elif args.command == "analyze":
         cmd_analyze(args.pcap)
     elif args.command == "entropy":
         cmd_entropy(args.domain)

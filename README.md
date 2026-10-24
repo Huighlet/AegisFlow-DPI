@@ -198,7 +198,67 @@ print(f"Inspected {telemetry['packets_inspected']} packets with {telemetry['tota
 
 ---
 
-## 7. CLI Usage
+## 7. Turnkey REST Threat Forensics Server & Docker Deployment
+
+AegisFlow-DPI includes a production-grade FastAPI REST inspection daemon and interactive Cyber Threat Forensics dashboard.
+
+### 1. Launch Server via CLI
+
+```bash
+# Start standalone forensics service on port 8080
+aegisflow serve --host 0.0.0.0 --port 8080
+```
+
+Once initialized:
+- **Interactive Threat Forensics UI:** [`http://localhost:8080/`](http://localhost:8080/)
+- **Interactive Swagger / OpenAPI Docs:** [`http://localhost:8080/docs`](http://localhost:8080/docs)
+- **Engine Health & Inspection Telemetry:** [`http://localhost:8080/health`](http://localhost:8080/health)
+- **Threat Alerts Query:** [`http://localhost:8080/v1/alerts`](http://localhost:8080/v1/alerts)
+- **Active 5-Tuple Network Flows:** [`http://localhost:8080/v1/flows`](http://localhost:8080/v1/flows)
+
+### 2. Standalone Container Execution (Docker)
+
+```bash
+# Build production image
+docker build -t aegisflow-dpi:latest .
+
+# Run standalone container
+docker run -d --name aegisflow-daemon -p 8080:8080 aegisflow-dpi:latest
+
+# Verify service health
+curl -s http://localhost:8080/health
+```
+
+### 3. REST API Forensics Usage Examples
+
+**Inspect Raw Packet Wire Bytes (Hex):**
+```bash
+curl -X POST http://localhost:8080/v1/inspect/packet \
+  -H "Content-Type: application/json" \
+  -d '{
+    "packet_hex": "00112233445566778899aabb08004500004b1234400040060000c0a801050a000001ad21005000000001000000005018721000000000504f5354202f20485454502f312e310d0a0d0a636d642e657865202f632077686f616d69"
+  }'
+```
+
+**Audit Domain for DNS Covert Tunneling (Shannon Entropy):**
+```bash
+curl -X POST http://localhost:8080/v1/audit/entropy \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "VGhpcyBpcyBhbiBleGZpbHRyYXRpb24gcGF5bG9hZAo.c2.attacker.net",
+    "threshold": 3.8
+  }'
+```
+
+**Upload PCAP Capture File for Automated Forensics:**
+```bash
+curl -X POST http://localhost:8080/v1/inspect/pcap \
+  -F "file=@incident_traffic.pcap"
+```
+
+---
+
+## 8. CLI Usage
 
 ### 1. Forensic PCAP Analysis
 
@@ -263,15 +323,15 @@ aegisflow bench -n 50000
 
 ---
 
-## 8. Test Suite Execution
+## 9. Test Suite Execution
 
-Run the complete 17-case test suite covering protocol decoders, Shannon entropy math, JA3 hashing, and Aho-Corasick matching:
+Run the complete 22-case test suite covering protocol decoders, Shannon entropy math, JA3 hashing, Aho-Corasick matching, and REST forensics endpoints:
 
 ```bash
 pytest -v
 ```
 
-All 17 test scenarios pass deterministically:
+All 22 test scenarios pass deterministically:
 ```text
 tests/test_dns.py::test_shannon_entropy_calculation PASSED
 tests/test_dns.py::test_dns_wire_unpack PASSED
@@ -288,12 +348,17 @@ tests/test_matcher.py::test_no_matches_clean PASSED
 tests/test_pcap_and_engine.py::test_pcap_roundtrip_write_read PASSED
 tests/test_pcap_and_engine.py::test_engine_detects_port_scans PASSED
 tests/test_pcap_and_engine.py::test_engine_detects_c2_payload_signature PASSED
+tests/test_server.py::test_health_check PASSED
+tests/test_server.py::test_dashboard_ui PASSED
+tests/test_server.py::test_entropy_audit_endpoint PASSED
+tests/test_server.py::test_inspect_packet_with_c2_signature PASSED
+tests/test_server.py::test_custom_signature_endpoint PASSED
 tests/test_tls.py::test_tls_client_hello_ja3_extraction PASSED
 tests/test_tls.py::test_non_tls_returns_none PASSED
 ```
 
 ---
 
-## 9. License
+## 10. License
 
 MIT License. Copyright (c) 2026 Huighlet Eyram Zowonu.
