@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aegisflow-dpi"
+version = "1.0.0"
+description = "High-Throughput Deep Packet Inspection & Protocol Anomaly Detection Engine"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Huighlet Eyram Zowonu", email = "eyramhuighlet@gmail.com" }
+]
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: System :: Networking :: Monitoring",
+]
+
+[project.scripts]
+aegisflow = "aegisflow.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
